@@ -1,16 +1,19 @@
 # Discord Token Tracker
 
-A Node.js application that tracks token mentions and updates from a Discord channel, specifically designed to monitor cryptocurrency token discussions and price movements.
+A Node.js application that tracks token mentions and updates from a Discord channel, specifically designed to monitor cryptocurrency token discussions, price movements, and performance metrics using the Birdeye API.
 
 ## Features
 
-- Real-time monitoring of Discord messages for token mentions
-- Automatic tracking of token price updates and market cap changes
-- First mention detection for new tokens
-- Periodic data synchronization
+- Real-time monitoring of Discord messages for token mentions and updates
+- Automatic tracking of token price updates, market cap changes, and liquidity metrics
+- First mention detection and attribution for new tokens
+- Token performance analysis using Birdeye API integration
+- Comprehensive token security assessment
+- Multiple periodic data synchronization jobs
 - REST API endpoints for status monitoring
 - Persistent data storage using JSON files
 - Configurable scheduling using cron jobs
+- Rate limit handling and retry mechanisms
 
 ## Prerequisites
 
@@ -18,6 +21,7 @@ A Node.js application that tracks token mentions and updates from a Discord chan
 - npm (Node Package Manager)
 - Discord Bot Token with necessary permissions
 - Access to the target Discord server and channel
+- Birdeye API key for token performance data
 
 ## Installation
 
@@ -39,35 +43,33 @@ AUTHORIZATION_TOKEN=your_discord_bot_token
 GUILD_ID=your_discord_server_id
 CHANNEL_ID=your_discord_channel_id
 AGENT_ID=your_agent_id
+BIRDEYE_API_KEY=your_birdeye_api_key
 ```
 
 ## Project Structure
 
 ```
-├── data/                 # Data storage directory
-│   └── tokens.json      # Persistent storage for token data
+├── data/                     # Data storage directory
+│   └── tokens.json          # Persistent storage for token data
 ├── src/
+│   ├── api/                 # API integration modules
+│   │   ├── get-token-performance.js   # Birdeye API integration
+│   │   ├── mention-scraper.js         # Discord message scraping
+│   │   ├── scraper-first-mention.js   # First mention detection
+│   │   └── send-token-data.js         # Data transmission
 │   ├── cache/
 │   │   └── dataHandler.js    # Data management and persistence
 │   ├── utils/
-│   │   └── parseMessage.js   # Message parsing utilities
-│   ├── mention-scraper.js    # Token mention tracking
-│   ├── scraper-first-mention.js  # First mention detection
-│   └── server.js       # Main application entry point
-├── .env                # Environment variables
-├── package.json       # Project dependencies and scripts
-└── README.md         # Project documentation
+│   │   ├── isNewOrUpdatedToken.js    # Token update validation
+│   │   ├── parseMessage.js           # Message parsing utilities
+│   │   └── tokenDataValidation.js    # Data validation
+│   └── server.js            # Main application entry point
+├── .env                     # Environment variables
+├── package.json            # Project dependencies and scripts
+└── README.md              # Project documentation
 ```
 
 ## Configuration
-
-### Discord Bot Setup
-
-1. Create a Discord application at https://discord.com/developers/applications
-2. Create a bot for your application
-3. Enable necessary intents (Message Content Intent is required)
-4. Copy the bot token and add it to your `.env` file
-5. Invite the bot to your server with necessary permissions
 
 ### Environment Variables
 
@@ -76,6 +78,7 @@ AGENT_ID=your_agent_id
 - `GUILD_ID`: The ID of your Discord server
 - `CHANNEL_ID`: The ID of the channel to monitor
 - `AGENT_ID`: Your agent identifier for API interactions
+- `BIRDEYE_API_KEY`: Your Birdeye API key for token performance data
 
 ## Usage
 
@@ -94,15 +97,34 @@ npm start
 ### API Endpoints
 
 - `GET /health`: Health check endpoint
-- `GET /status`: Current application status and statistics
+- `GET /status`: Current application status and statistics, including:
+  - Last run timestamp
+  - Success status
+  - New messages count
+  - Error information (if any)
+  - Recommendations sent count
 
-### Monitoring
+### Scheduled Jobs
 
-The application runs three main cron jobs:
+The application runs several cron jobs:
 
-1. Message Scraper: Runs every minute (":00")
-2. First Mention Scraper: Runs 30 seconds after each minute (":30")
-3. Recommendation Processor: Runs every 30 seconds
+1. Discord Message Scraper: Runs every 2 seconds
+   - Retrieves new token mentions and updates
+   - Processes and validates message content
+   - Updates token data in storage
+
+2. Token Mention & Performance Update: Runs every 15 seconds
+   - Updates first mention data for tokens
+   - Processes initial performance metrics for new tokens
+
+3. Regular Performance Updates: Runs every 30 minutes
+   - Updates token performance metrics
+   - Tracks market changes and liquidity
+
+4. Recommendation Processing: Runs every 6 minutes
+   - Processes and sends token recommendations
+   - Validates data completeness
+   - Handles failed recommendations
 
 ## Data Structure
 
@@ -119,6 +141,23 @@ The application stores token data in the following format:
       "tokenAddress": "address",
       "firstSeenAt": "ISO timestamp",
       "pumpFunLink": "URL",
+      "performance": {
+        "priceChange24h": "value",
+        "volumeChange24h": "value",
+        "trade_24h_change": "value",
+        "liquidity": "value",
+        "liquidityChange24h": "value",
+        "holderChange24h": "value",
+        "rugPull": boolean,
+        "isScam": boolean,
+        "marketCapChange24h": "value",
+        "sustainedGrowth": boolean,
+        "rapidDump": boolean,
+        "suspiciousVolume": boolean,
+        "validationTrust": "value",
+        "balance": "value",
+        "initialMarketCap": "value"
+      },
       "updates": [
         {
           "timestamp": "ISO timestamp",
@@ -133,6 +172,12 @@ The application stores token data in the following format:
         "timestamp": "ISO timestamp"
       }
     }
+  },
+  "sentRecommendations": {
+    "tokenAddress": "ISO timestamp"
+  },
+  "lastPerformanceUpdates": {
+    "tokenAddress": "ISO timestamp"
   }
 }
 ```
@@ -140,12 +185,14 @@ The application stores token data in the following format:
 ## Error Handling
 
 The application includes comprehensive error handling:
-- Discord API rate limiting
-- Network failures
-- Data parsing errors
-- Storage failures
+- Discord API rate limiting and retry mechanisms
+- Birdeye API error handling with automatic retries
+- Network failures and timeout handling
+- Data parsing and validation
+- Storage operation failures
+- Recommendation transmission errors
 
-Errors are logged to the console and captured in the status endpoint.
+Errors are logged to the console and reflected in the status endpoint.
 
 ## Contributing
 
