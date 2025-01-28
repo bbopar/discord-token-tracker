@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const axios = require("axios");
-const { parseMessage } = require("./utils/parseMessage.js");
+const { parseMessage } = require("../utils/parseMessage.js");
 
 const DISCORD_API_URL =
   "https://discord.com/api/v9/channels/%s/messages?limit=50";

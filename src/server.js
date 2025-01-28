@@ -1,9 +1,15 @@
-require("dotenv").config();
-const express = require("express");
-const cron = require("node-cron");
-const { retrieveAndParseMessages } = require("./scraper-first-mention.js");
-const { updateTokenMention } = require("./mention-scraper.js");
 const { DataHandler } = require("./cache/dataHandler.js");
+const { isNewOrUpdatedToken } = require("./utils/isNewOrUpdatedToken.js");
+const { isValidTokenData } = require("./utils/tokenDataValidation.js");
+const { retrieveAndParseMessages } = require("./api/scraper-first-mention.js");
+const { sendRecommendation } = require("./api/send-token-data.js");
+const { updateTokenMention } = require("./api/mention-scraper.js");
+const { updateTokenPerformance } = require("./api/get-token-performance.js");
+
+const cron = require("node-cron");
+const express = require("express");
+require("dotenv").config();
+
 const app = express();
 const PORT = process.env.PORT || 3210;
 
@@ -27,46 +33,8 @@ let sentRecommendations = new Set();
   console.log("Data handler initialized");
 })();
 
-// Function to send recommendations to the API
-async function sendRecommendations(agentId, recommendations) {
-  try {
-    console.log("###### recommendations:", recommendations);
-    // const response = await axios.post(`/recommendations/${agentId}/set`, recommendations);
-    // console.log(`Sent ${recommendations.length} recommendations to agent ${agentId}`);
-    // return response.data;
-  } catch (error) {
-    console.error(
-      `Error sending recommendations to agent ${agentId}:`,
-      error.message
-    );
-    throw error;
-  }
-}
 
-// Helper to check if a message needs processing
-function isNewOrUpdatedToken(message, dataHandler) {
-  const existingToken = dataHandler.getTokenByAddress(
-    message.token.tokenAddress
-  );
-
-  // New token
-  if (!existingToken) return true;
-
-  // Check if this is a new update with different stats
-  if (message.token.stats) {
-    const lastUpdate = existingToken.updates[existingToken.updates.length - 1];
-    return (
-      !lastUpdate ||
-      lastUpdate.marketCap !== message.token.stats.marketCap ||
-      lastUpdate.percentage !== message.token.stats.percentage
-    );
-  }
-
-  return false;
-}
-
-// Run Discord message scraper exactly on the minute mark (e.g., 1:00, 2:00, etc.)
-cron.schedule("0 * * * * *", async () => {
+cron.schedule("*/2 * * * * *", async () => {
   console.log("Running Discord scraper...");
   try {
     // Retrieve and parse messages
@@ -100,57 +68,104 @@ cron.schedule("0 * * * * *", async () => {
   }
 });
 
-// Run first mention scraper 30 seconds after each minute mark (e.g., 1:30, 2:30, etc.)
-cron.schedule("30 * * * * *", async () => {
-  console.log("Checking for token mentions...");
-  try {
-    const tokenAddress = dataHandler.getNextJob();
-    if (tokenAddress) {
-      await updateTokenMention(dataHandler, tokenAddress);
+// First mention and initial performance update (every 15 seconds)
+cron.schedule("*/15 * * * * *", async () => {
+    console.log("Checking for token mentions...");
+    try {
+      // Handle first mention update
+      const tokenAddress = dataHandler.getNextJob();
+      if (tokenAddress) {
+        await updateTokenMention(dataHandler, tokenAddress);
+      }
+  
+      // Handle initial performance update for new tokens
+      const tokens = await dataHandler.getTokens();
+      if (tokens) {
+        for (const token of tokens) {
+          if (!token.performance && dataHandler.shouldUpdatePerformance(token.tokenAddress)) {
+            await updateTokenPerformance(
+              dataHandler,
+              token.tokenAddress,
+              process.env.BIRDEYE_API_KEY
+            );
+            dataHandler.markPerformanceUpdated(token.tokenAddress);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error in mention check cron:", error);
     }
-  } catch (error) {
-    console.error("Error in mention check cron:", error);
-  }
-});
-
-// Read and send recommendations every 30 seconds
-cron.schedule("*/30 * * * * *", async () => {
-  console.log("Processing recommendations...");
-  try {
-    // Get tokens that haven't been sent yet
-    const newRecommendations = Object.values(dataHandler.data.tokens)
-      .filter((token) => !sentRecommendations.has(token.pumpFunLink))
-      .filter((token) => token.firstMention)
-      .map((token) => ({
-        user: token.firstMention,
-        token: {
-          name: token.name,
-          ticker: token.ticker,
-          chain: token.chain,
-          tokenAddress: token.tokenAddress,
-          pumpFunLink: token.pumpFunLink,
-          marketCap: token.updates[0]?.marketCap,
-          percentage: token.updates[0]?.percentage,
-          recommendationType: token.updates[0]?.type,
-        },
-      }));
-
-    if (newRecommendations.length > 0) {
-      console.log("###### formattedRecommendations:", newRecommendations);
-
-      // Send to API
-      const agentId = process.env.AGENT_ID || "default";
-      await sendRecommendations(agentId, newRecommendations);
-
-      // Mark these recommendations as sent
-      newRecommendations.forEach((rec) => {
-        sentRecommendations.add(rec.token.pumpFunLink);
-      });
+  });
+  
+  // Regular performance updates (every 30 minutes)
+  cron.schedule("*/30 * * * *", async () => {
+    console.log("Running scheduled performance updates...");
+    try {
+      const tokensToUpdate = dataHandler.getTokensNeedingPerformanceUpdate();
+      for (const token of tokensToUpdate) {
+        await updateTokenPerformance(
+          dataHandler,
+          token.tokenAddress,
+          process.env.BIRDEYE_API_KEY
+        );
+        dataHandler.markPerformanceUpdated(token.tokenAddress);
+      }
+    } catch (error) {
+      console.error("Error updating token performance:", error);
     }
-  } catch (error) {
-    console.error("Error processing recommendations:", error);
-  }
-});
+  });
+  
+  // Process and send recommendations (every 6 minutes)
+  cron.schedule("*/360 * * * * *", async () => {
+    console.log("Processing recommendations...");
+    try {
+      const unsentTokens = dataHandler.getUnsent()
+        .filter(token => token.firstMention && token.performance)
+        .map(token => ({
+          user: {
+            username: token.firstMention.username,
+            discordId: token.firstMention.discordId,
+            timestamp: token.firstMention.timestamp,
+          },
+          token: {
+            name: token.name,
+            ticker: token.ticker,
+            chain: token.chain,
+            tokenAddress: token.tokenAddress,
+            pumpFunLink: token.pumpFunLink,
+            marketCap: token.updates[0]?.marketCap,
+            percentage: token.updates[0]?.percentage,
+            recommendationType: token.updates[0]?.type,
+            timestamp: token.firstMention.timestamp,
+          },
+          performance: token.performance,
+        }));
+  
+      for (const tokenData of unsentTokens) {
+        if (isValidTokenData(tokenData)) {
+          try {
+            const agentId = process.env.AGENT_ID;
+            const success = await sendRecommendation(agentId, tokenData);
+
+            console.log("SUCCESS", success);
+            
+            // Only mark as sent if sendRecommendation was successful
+            if (success) {
+              dataHandler.markRecommendationSent(tokenData.token.tokenAddress);
+            } else {
+              console.log(`Failed to send recommendation for token ${tokenData.token.tokenAddress}`);
+            }
+          } catch (sendError) {
+            console.error(`Error sending recommendation for token ${tokenData.token.tokenAddress}:`, sendError);
+            // Don't mark as sent if there was an error
+            continue;
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error processing recommendations:", error);
+    }
+  });
 
 // Status endpoint
 app.get("/status", (req, res) => {
